@@ -1,18 +1,18 @@
-'use client';
+"use client";
 
-import { useSearchParams, useRouter } from 'next/navigation';
-import { useState } from 'react';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { auth, db } from '@/lib/firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { Suspense, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { auth, db } from "@/lib/firebase";
+import { doc, updateDoc } from "firebase/firestore";
 
-export default function CreatePasswordPage() {
+function CreatePasswordInner() {
   const params = useSearchParams();
   const router = useRouter();
 
-  const email = params.get('email'); // read ?email=value
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const email = params.get("email"); // read ?email=value
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   if (!email) {
@@ -25,7 +25,7 @@ export default function CreatePasswordPage() {
 
   const handleCreatePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError("");
     setLoading(true);
 
     try {
@@ -34,16 +34,16 @@ export default function CreatePasswordPage() {
       const uid = userCred.user.uid;
 
       // Update Firestore admin record
-      const adminRef = doc(db, 'venueAdmins', email);
+      const adminRef = doc(db, "venueAdmins", email);
       await updateDoc(adminRef, {
         uid,
         passwordCreated: true,
       });
 
-      router.push('/dashboard'); // login complete → dashboard
+      router.push("/dashboard"); // login complete → dashboard
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'Failed to create password.');
+      setError(err.message || "Failed to create password.");
       setLoading(false);
     }
   };
@@ -81,10 +81,24 @@ export default function CreatePasswordPage() {
             disabled={loading}
             className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg font-semibold transition"
           >
-            {loading ? 'Creating...' : 'Create Password'}
+            {loading ? "Creating..." : "Create Password"}
           </button>
         </form>
       </div>
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center text-white">
+          Loading…
+        </div>
+      }
+    >
+      <CreatePasswordInner />
+    </Suspense>
   );
 }

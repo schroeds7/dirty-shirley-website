@@ -1,17 +1,18 @@
-'use client';
+"use client";
 
-import { useSearchParams, useRouter } from 'next/navigation';
-import { useState } from 'react';
-import { signInWithEmailAndPassword } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import { useState } from "react";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 
-export default function PasswordLoginPage() {
+function PasswordInner() {
   const params = useSearchParams();
   const router = useRouter();
 
-  const email = params.get('email');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const email = params.get("email");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   if (!email) {
@@ -24,15 +25,15 @@ export default function PasswordLoginPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError("");
     setLoading(true);
 
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      router.push('/dashboard');
+      router.push("/dashboard");
     } catch (err: any) {
       console.error(err);
-      setError('Incorrect password. Please try again.');
+      setError("Incorrect password. Please try again.");
       setLoading(false);
     }
   };
@@ -69,10 +70,24 @@ export default function PasswordLoginPage() {
             disabled={loading}
             className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg font-semibold transition"
           >
-            {loading ? 'Signing in...' : 'Login'}
+            {loading ? "Signing in..." : "Login"}
           </button>
         </form>
       </div>
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center text-white">
+          Loading…
+        </div>
+      }
+    >
+      <PasswordInner />
+    </Suspense>
   );
 }
