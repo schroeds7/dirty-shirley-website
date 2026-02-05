@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://dirtyshirley.app/</loc>
+  </url>
+  <url>
+    <loc>https://dirtyshirley.app/about</loc>
+  </url>
+  <url>
+    <loc>https://dirtyshirley.app/contact</loc>
+  </url>
+  <url>
+    <loc>https://dirtyshirley.app/privacy</loc>
+  </url>
+  <url>
+    <loc>https://dirtyshirley.app/terms</loc>
+  </url>
+  <url>
+    <loc>https://dirtyshirley.app/login</loc>
+  </url>
+  <url>
+    <loc>https://dirtyshirley.app/login/password</loc>
+  </url>
+  <url>
+    <loc>https://dirtyshirley.app/login/create-password</loc>
+  </url>
+  <url>
+    <loc>https://dirtyshirley.app/dashboard</loc>
+  </url>
+</urlset>
