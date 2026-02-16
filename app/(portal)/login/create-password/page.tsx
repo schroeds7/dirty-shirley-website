@@ -40,7 +40,7 @@ function CreatePasswordInner() {
         passwordCreated: true,
       });
 
-      router.push("/dashboard"); // login complete → dashboard
+      router.push("/select-venue"); // login complete → venue selection
     } catch (err: any) {
       console.error(err);
       setError(err.message || "Failed to create password.");

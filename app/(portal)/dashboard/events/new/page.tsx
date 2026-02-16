@@ -10,6 +10,7 @@ import {
   setDoc,
   serverTimestamp,
   Timestamp,
+  writeBatch,
 } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 
@@ -84,6 +85,61 @@ const EVENT_TYPES = [
   'Meet & Greet',
 ];
 
+const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']; // 0=Sun ... 6=Sat
+
+function addDays(d: Date, days: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+}
+
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+// Generate N weekly occurrences on selected weekdays, INCLUDING the first event as occurrence #1.
+// If the start date's weekday is not selected, the first occurrence will be the next selected weekday after start.
+function generateWeeklyOccurrences(opts: {
+  start: Date;
+  end: Date;
+  weekdays: number[]; // 0-6
+  count: number;
+}) {
+  const { start, end, weekdays, count } = opts;
+
+  const durationMs = end.getTime() - start.getTime();
+  const safeDurationMs =
+    durationMs > 0 ? durationMs : durationMs + 24 * 60 * 60 * 1000; // handles overnight
+
+  const sorted = [...new Set(weekdays)].sort((a, b) => a - b);
+  const results: Array<{ start: Date; end: Date }> = [];
+
+  let cursorDay = startOfDay(start);
+
+  while (results.length < count) {
+    for (const wd of sorted) {
+      const delta = (wd - cursorDay.getDay() + 7) % 7;
+      const occurrenceDay = addDays(cursorDay, delta);
+
+      const occStart = new Date(occurrenceDay);
+      occStart.setHours(start.getHours(), start.getMinutes(), 0, 0);
+
+      if (occStart.getTime() < start.getTime()) continue;
+
+      const occEnd = new Date(occStart.getTime() + safeDurationMs);
+
+      results.push({ start: occStart, end: occEnd });
+      if (results.length >= count) break;
+    }
+
+    cursorDay = addDays(cursorDay, 7);
+  }
+
+  return results;
+}
+
 /* ----------------------------------------------------------
    PAGE
 ---------------------------------------------------------- */
@@ -122,7 +178,10 @@ export default function NewEventPage() {
   const [ticketUrl, setTicketUrl] = useState('');
 
   const [isRecurring, setIsRecurring] = useState(false);
-  const [extraDates, setExtraDates] = useState<string[]>([]);
+
+  // Weekly recurrence controls (SMTWTFS)
+  const [repeatWeekdays, setRepeatWeekdays] = useState<number[]>([]); // 0=Sun ... 6=Sat
+  const [occurrencesCount, setOccurrencesCount] = useState<number>(10); // default 10, max 50
 
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState('');
@@ -132,10 +191,20 @@ export default function NewEventPage() {
   ---------------------------------------------------------- */
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
-      if (!user) return router.push('/login');
+      if (!user) {
+        router.replace('/');
+        return;
+      }
 
       try {
+        // Pull the admin record from `venueAdmins/{email}` (doc id = email)
         const email = user.email?.toLowerCase() || '';
+        if (!email) {
+          setError('No email found for this account.');
+          setLoading(false);
+          return;
+        }
+
         const adminRef = doc(db, 'venueAdmins', email);
         const adminSnap = await getDoc(adminRef);
 
@@ -145,12 +214,49 @@ export default function NewEventPage() {
           return;
         }
 
-        const admin = adminSnap.data();
-        const vId = admin.venueId;
+        const adminData: any = adminSnap.data();
 
-        setVenueId(vId);
+        // Support both new (`venueIds`) and legacy (`venueId`) shapes
+        const venueIds: string[] =
+          Array.isArray(adminData.venueIds) && adminData.venueIds.length > 0
+            ? adminData.venueIds
+            : adminData.venueId
+            ? [adminData.venueId]
+            : [];
 
-        const venueRef = doc(db, 'venues', vId);
+        if (venueIds.length === 0) {
+          setError('No venues assigned to this admin account.');
+          setLoading(false);
+          return;
+        }
+
+        // Determine active venue (localStorage). If missing:
+        // - if multiple venues, force selection
+        // - if one venue, auto-select it
+        let activeVenueId: string | null =
+          typeof window !== 'undefined'
+            ? localStorage.getItem('activeVenueId')
+            : null;
+
+        if (!activeVenueId || activeVenueId === 'undefined' || activeVenueId === 'null') {
+          if (venueIds.length > 1) {
+            router.replace('/select-venue');
+            return;
+          }
+          activeVenueId = venueIds[0];
+          localStorage.setItem('activeVenueId', activeVenueId);
+        }
+
+        // If stored active venue isn't valid for this admin, reset to the first assigned venue
+        if (!venueIds.includes(activeVenueId)) {
+          activeVenueId = venueIds[0];
+          localStorage.setItem('activeVenueId', activeVenueId);
+        }
+
+        setVenueId(activeVenueId);
+
+        // Fetch venue document
+        const venueRef = doc(db, 'venues', activeVenueId);
         const venueSnap = await getDoc(venueRef);
 
         if (!venueSnap.exists()) {
@@ -233,16 +339,32 @@ export default function NewEventPage() {
       const start = Timestamp.fromDate(new Date(startDateTime));
       const end = Timestamp.fromDate(new Date(endDateTime));
 
+      const startJs = new Date(startDateTime);
+      const endJs = new Date(endDateTime);
+
+      if (Number.isNaN(startJs.getTime()) || Number.isNaN(endJs.getTime())) {
+        throw new Error('Invalid start/end date.');
+      }
+
+      // Enforce max occurrences (default 10, max 50)
+      const safeCount = Math.max(
+        1,
+        Math.min(50, Math.floor(occurrencesCount || 10))
+      );
+
+      if (isRecurring && repeatWeekdays.length === 0) {
+        throw new Error('Please select at least one weekday for recurrence.');
+      }
+
+      const seriesId =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? (crypto as any).randomUUID()
+          : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
       const imgArray = imageUrls
         .split('\n')
         .map((x) => x.trim())
         .filter((x) => x.length > 0);
-
-      const recurrence = isRecurring
-        ? extraDates
-            .filter((d) => d)
-            .map((d) => Timestamp.fromDate(new Date(d)))
-        : [];
 
       let tagsToSave: any[] = [...selectedTags];
 
@@ -266,11 +388,10 @@ export default function NewEventPage() {
         );
       }
 
-      const eventData = {
+      const baseEventData = {
         name,
         description,
-        startDate: start,
-        endDate: end,
+
         venueId,
         venueName: venueData.name,
         city: venueData.city,
@@ -282,7 +403,10 @@ export default function NewEventPage() {
         coverCharge,
         ageRequirement,
         musicGenres: selectedGenres,
-        artists: artistsInput.split(',').map(a => a.trim()).filter(a => a.length > 0),
+        artists: artistsInput
+          .split(',')
+          .map((a) => a.trim())
+          .filter((a) => a.length > 0),
         tags: tagsToSave,
 
         dressCode,
@@ -291,33 +415,81 @@ export default function NewEventPage() {
         images: imgArray,
         ticketUrl,
 
-        isRecurring,
-        recurrenceDates: recurrence,
+        isRecurring: !!isRecurring,
+        seriesId: isRecurring ? seriesId : null,
+        recurrence: isRecurring
+          ? {
+              frequency: 'weekly',
+              byWeekday: [...new Set(repeatWeekdays)].sort((a, b) => a - b),
+              occurrences: safeCount,
+              timezone:
+                (venueData.timezone as string) ||
+                Intl.DateTimeFormat().resolvedOptions().timeZone ||
+                'America/New_York',
+            }
+          : null,
 
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         createdByAdminUid: auth.currentUser?.uid ?? null,
+        createdByAdminEmail: auth.currentUser?.email?.toLowerCase() ?? null,
 
         hotScore: 0,
         views: 0,
       };
 
       const eventsCol = collection(db, 'events');
-      const newEventRef = doc(eventsCol);
-      const eventId = newEventRef.id;
 
-      await setDoc(newEventRef, { ...eventData, eventId });
+      if (!isRecurring) {
+        const newEventRef = doc(eventsCol);
+        const eventId = newEventRef.id;
 
-      const venueEventRef = doc(db, 'venues', venueId, 'events', eventId);
-      await setDoc(venueEventRef, { ...eventData, eventId });
+        const eventData = {
+          ...baseEventData,
+          startDate: start,
+          endDate: end,
+          eventId,
+        };
 
-      setSuccess('Event created!');
-      setSubmitting(false);
+        await setDoc(newEventRef, eventData);
 
-      setTimeout(() => router.push('/dashboard'), 900);
+        const venueEventRef = doc(db, 'venues', venueId, 'events', eventId);
+        await setDoc(venueEventRef, eventData);
+      } else {
+        const occurrences = generateWeeklyOccurrences({
+          start: startJs,
+          end: endJs,
+          weekdays: repeatWeekdays,
+          count: safeCount,
+        });
+
+        const batch = writeBatch(db);
+
+        for (const occ of occurrences) {
+          const newEventRef = doc(eventsCol);
+          const eventId = newEventRef.id;
+
+          const eventData = {
+            ...baseEventData,
+            startDate: Timestamp.fromDate(occ.start),
+            endDate: Timestamp.fromDate(occ.end),
+            eventId,
+          };
+
+          batch.set(newEventRef, eventData);
+
+          const venueEventRef = doc(db, 'venues', venueId, 'events', eventId);
+          batch.set(venueEventRef, eventData);
+        }
+
+        await batch.commit();
+      }
+
+      setSuccess(isRecurring ? `Created ${safeCount} events!` : 'Event created!');
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'Failed to create event.');
+      setError(err?.message || 'Failed to create event.');
+    } finally {
       setSubmitting(false);
     }
   };
@@ -404,6 +576,7 @@ export default function NewEventPage() {
               />
             </div>
           </div>
+
 
           {/* STATUS */}
           <div>
@@ -597,36 +770,93 @@ export default function NewEventPage() {
               <input
                 type="checkbox"
                 checked={isRecurring}
-                onChange={(e) => setIsRecurring(e.target.checked)}
+onChange={(e) => {
+  const checked = e.target.checked;
+  setIsRecurring(checked);
+
+  if (checked) {
+    // Default to the start date's weekday (if start datetime is set)
+    if (startDateTime) {
+      const d = new Date(startDateTime);
+      if (!Number.isNaN(d.getTime())) {
+        setRepeatWeekdays([d.getDay()]);
+      }
+    } else {
+      setRepeatWeekdays([]);
+    }
+    setOccurrencesCount(10);
+  } else {
+    setRepeatWeekdays([]);
+    setOccurrencesCount(10);
+  }
+}}
               />
               This event recurs
             </label>
 
-            {isRecurring && (
-              <div className="space-y-2 mt-2">
-                {extraDates.map((d, idx) => (
-                  <input
-                    key={idx}
-                    type="datetime-local"
-                    value={d}
-                    onChange={(e) => {
-                      const updated = [...extraDates];
-                      updated[idx] = e.target.value;
-                      setExtraDates(updated);
-                    }}
-                    className="w-full p-2 rounded bg-zinc-800 border border-zinc-700"
-                  />
-                ))}
+{isRecurring && (
+  <div className="mt-3 space-y-4 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+    <div>
+      <div className="text-sm font-semibold">Repeats on</div>
+      <div className="mt-2 flex gap-2">
+        {WEEKDAYS.map((label, idx) => {
+          const active = repeatWeekdays.includes(idx);
+          return (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => {
+                setRepeatWeekdays((prev) =>
+                  prev.includes(idx)
+                    ? prev.filter((x) => x !== idx)
+                    : [...prev, idx]
+                );
+              }}
+              className={`h-9 w-9 rounded-full border text-sm font-semibold ${
+                active
+                  ? 'bg-red-600 border-red-600'
+                  : 'bg-zinc-800 border-zinc-700 hover:bg-zinc-700'
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-2 text-xs text-white/60">
+        Select day(s) of the week. The first occurrence will be the start date you entered (if it matches a selected day).
+      </div>
+    </div>
 
-                <button
-                  type="button"
-                  onClick={() => setExtraDates([...extraDates, ''])}
-                  className="px-3 py-1 rounded border border-zinc-600 hover:bg-zinc-800 text-sm"
-                >
-                  + Add another date
-                </button>
-              </div>
-            )}
+    <div className="grid grid-cols-2 gap-4">
+      <div>
+        <label className="text-sm font-semibold">Occurrences</label>
+        <input
+          type="number"
+          min={1}
+          max={50}
+          value={occurrencesCount}
+          onChange={(e) => {
+            const n = Number(e.target.value);
+            setOccurrencesCount(Number.isFinite(n) ? n : 10);
+          }}
+          className="w-full mt-1 p-2 rounded bg-zinc-800 border border-zinc-700"
+        />
+        <div className="mt-1 text-xs text-white/60">
+          Default is 10. Max is 50 per create.
+        </div>
+      </div>
+
+      <div className="flex items-end">
+        <div className="text-xs text-white/60">
+          Tip: start/end time will be copied for each occurrence.
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+          {/* End of Recurring section */}
           </div>
 
           {/* SUBMIT */}

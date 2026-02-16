@@ -30,7 +30,7 @@ function PasswordInner() {
 
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      router.push("/dashboard");
+      router.push("/select-venue");
     } catch (err: any) {
       console.error(err);
       setError("Incorrect password. Please try again.");

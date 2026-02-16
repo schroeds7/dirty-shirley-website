@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { auth, db } from '@/lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc, collection, getDocs, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, getDocs, updateDoc, Timestamp, writeBatch } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 
 export default function DashboardPage() {
@@ -18,14 +18,19 @@ export default function DashboardPage() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user) {
-        router.replace('/login');
+        router.replace('/');
         return;
       }
 
       try {
+        // Pull the admin record from `venueAdmins/{email}` (doc id = email)
         const email = user.email?.toLowerCase() || '';
+        if (!email) {
+          setError('No email found for this account.');
+          setLoading(false);
+          return;
+        }
 
-        // Fetch admin record
         const adminRef = doc(db, 'venueAdmins', email);
         const adminSnap = await getDoc(adminRef);
 
@@ -35,12 +40,72 @@ export default function DashboardPage() {
           return;
         }
 
-        const admin = adminSnap.data();
-        const vId = admin.venueId as string;
-        setVenueId(vId);
+        const adminData: any = adminSnap.data();
+
+        // Support both new (`venueIds`) and legacy (`venueId`) shapes
+        const venueIds: string[] =
+          Array.isArray(adminData.venueIds) && adminData.venueIds.length > 0
+            ? adminData.venueIds
+            : adminData.venueId
+            ? [adminData.venueId]
+            : [];
+
+        if (venueIds.length === 0) {
+          setError('No venues assigned to this admin account.');
+          setLoading(false);
+          return;
+        }
+
+        // Determine active venue (localStorage). Robust against stale/invalid values.
+        let activeVenueId: string | null =
+          typeof window !== 'undefined' ? localStorage.getItem('activeVenueId') : null;
+
+        // Normalize bad/stale localStorage values
+        if (!activeVenueId || activeVenueId === 'undefined' || activeVenueId === 'null') {
+          activeVenueId = null;
+        }
+
+        // If missing, choose the right path:
+        // - multiple venues => force selection
+        // - single venue => auto-select
+        if (!activeVenueId) {
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem('activeVenueId');
+          }
+
+          if (venueIds.length > 1) {
+            router.replace('/select-venue');
+            return;
+          }
+
+          activeVenueId = venueIds[0];
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('activeVenueId', activeVenueId);
+          }
+        }
+
+        // If stored active venue isn't valid for this admin, reset.
+        // If the admin has multiple venues, force re-selection (prevents loading the wrong venue).
+        if (!venueIds.includes(activeVenueId)) {
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem('activeVenueId');
+          }
+
+          if (venueIds.length > 1) {
+            router.replace('/select-venue');
+            return;
+          }
+
+          activeVenueId = venueIds[0];
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('activeVenueId', activeVenueId);
+          }
+        }
+
+        setVenueId(activeVenueId);
 
         // Fetch venue document
-        const venueRef = doc(db, 'venues', vId);
+        const venueRef = doc(db, 'venues', activeVenueId);
         const venueSnap = await getDoc(venueRef);
 
         if (!venueSnap.exists()) {
@@ -62,8 +127,14 @@ export default function DashboardPage() {
   }, [router]);
 
   const handleLogout = async () => {
-    await auth.signOut();
-    router.replace('/login');
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('activeVenueId');
+      }
+      await auth.signOut();
+    } finally {
+      router.replace('/');
+    }
   };
 
   if (loading) {
@@ -102,6 +173,13 @@ export default function DashboardPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* NEW BUTTON — Switch Venue */}
+          <button
+            onClick={() => router.push('/select-venue')}
+            className="bg-zinc-800 hover:bg-zinc-700 text-sm px-4 py-2 rounded border border-zinc-600"
+          >
+            Switch Venue
+          </button>
           {/* NEW BUTTON — Analytics */}
           <button
             onClick={() => router.push('/dashboard/analytics')}
@@ -707,8 +785,42 @@ function HoursCard({
 /* ---------------- EVENTS LIST ---------------- */
 
 function EventsList({ venueId }: { venueId: string }) {
-  const [events, setEvents] = useState<any[]>([]);
+  type EventDoc = {
+    id: string;
+    startDate?: Timestamp;
+    endDate?: Timestamp;
+    [key: string]: any;
+  };
+  const router = useRouter();
+  const [events, setEvents] = useState<EventDoc[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const handleDeleteEvent = async (event: EventDoc) => {
+    const name = event?.name || 'this event';
+    const ok = window.confirm(`Delete ${name}? This cannot be undone.`);
+    if (!ok) return;
+
+    try {
+      // Venue doc id is the subcollection doc id (`event.id`)
+      const venueEventRef = doc(db, 'venues', venueId, 'events', event.id);
+
+      // Global doc id is typically stored in `event.eventId`.
+      // Fallback to the same id if needed.
+      const globalEventId = (event as any).eventId || event.id;
+      const globalEventRef = doc(db, 'events', globalEventId);
+
+      const batch = writeBatch(db);
+      batch.delete(venueEventRef);
+      batch.delete(globalEventRef);
+      await batch.commit();
+
+      // Update UI immediately
+      setEvents((prev) => prev.filter((e) => e.id !== event.id));
+    } catch (e) {
+      console.error(e);
+      alert('Failed to delete event. Please try again.');
+    }
+  };
 
   useEffect(() => {
     const loadEvents = async () => {
@@ -716,24 +828,24 @@ function EventsList({ venueId }: { venueId: string }) {
         const colRef = collection(db, 'venues', venueId, 'events');
         const snap = await getDocs(colRef);
 
-        const items = snap.docs.map((d) => d.data());
+        const items: EventDoc[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
 
         const now = new Date();
 
-        const upcoming = items.filter((e) => e.startDate?.toDate() >= now);
-        const past = items.filter((e) => e.startDate?.toDate() < now);
+        const upcoming = items.filter((e) => (e.startDate ? e.startDate.toDate() >= now : false));
+        const past = items.filter((e) => (e.startDate ? e.startDate.toDate() < now : false));
 
-        upcoming.sort(
-          (a, b) =>
-            a.startDate.toDate().getTime() -
-            b.startDate.toDate().getTime()
-        );
+        upcoming.sort((a, b) => {
+          const at = a.startDate ? a.startDate.toDate().getTime() : 0;
+          const bt = b.startDate ? b.startDate.toDate().getTime() : 0;
+          return at - bt;
+        });
 
-        past.sort(
-          (a, b) =>
-            b.startDate.toDate().getTime() -
-            a.startDate.toDate().getTime()
-        );
+        past.sort((a, b) => {
+          const at = a.startDate ? a.startDate.toDate().getTime() : 0;
+          const bt = b.startDate ? b.startDate.toDate().getTime() : 0;
+          return bt - at;
+        });
 
         setEvents([...upcoming, ...past]);
       } catch (err) {
@@ -770,10 +882,10 @@ function EventsList({ venueId }: { venueId: string }) {
       </div>
 
       <div className="mt-4 flex gap-4 overflow-x-auto pb-2 snap-x snap-mandatory">
-        {events.map((event) => {
-          const start = event.startDate?.toDate();
-          const end = event.endDate?.toDate();
-          const isPast = start < new Date();
+        {events.map((event: EventDoc) => {
+          const start = event.startDate ? event.startDate.toDate() : undefined;
+          const end = event.endDate ? event.endDate.toDate() : undefined;
+          const isPast = start && start < new Date();
 
           // Your schema: `images: string[]` (fallbacks included)
           const imageUrl =
@@ -796,13 +908,50 @@ function EventsList({ venueId }: { venueId: string }) {
 
           return (
             <div
-              key={event.eventId}
-              className={`snap-start shrink-0 w-[320px] rounded-xl border overflow-hidden ${
+              key={event.id}
+              className={`snap-start shrink-0 w-[320px] rounded-xl border overflow-hidden relative ${
                 isPast
                   ? 'border-zinc-800 bg-zinc-950/40 opacity-70'
                   : 'border-zinc-800 bg-zinc-950/60'
               }`}
             >
+              {/* Actions (Edit / Delete) */}
+              <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    router.push(
+                      `/dashboard/events/edit?eventId=${encodeURIComponent(event.id)}&venueId=${encodeURIComponent(venueId)}`
+                    )
+                  }
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white hover:bg-black/75"
+                  aria-label="Edit event"
+                  title="Edit"
+                >
+                  {/* Pencil icon */}
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleDeleteEvent(event)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-red-500/30 bg-black/60 text-red-200 hover:bg-black/75"
+                  aria-label="Delete event"
+                  title="Delete"
+                >
+                  {/* Trash icon */}
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M3 6h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                    <path d="M8 6V4h8v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                    <path d="M6 6l1 16h10l1-16" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
+                    <path d="M10 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                    <path d="M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              </div>
               {/* Image */}
               {imageUrl ? (
                 <img

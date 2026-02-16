@@ -65,7 +65,7 @@ export default function ContactPage() {
 
             <div className="mt-6">
               <Link
-                href="/dashboard"
+                href="/select-venue"
                 className="inline-flex items-center justify-center rounded-xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
               >
                 Open Venue Portal

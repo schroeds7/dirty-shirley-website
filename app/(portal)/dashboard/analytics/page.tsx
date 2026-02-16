@@ -159,31 +159,70 @@ export default function AnalyticsPage() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user) {
-        router.replace('/login');
+        router.replace('/');
         return;
       }
 
       try {
-        const email = user.email?.toLowerCase() || '';
-
-        const adminRef = doc(db, 'venueAdmins', email);
-        const adminSnap = await getDoc(adminRef);
-        if (!adminSnap.exists()) {
-          setError('Admin record not found.');
+        // Pull the admin user record from `venueAdmins/{emailLower}`
+        const emailLower = (user.email || '').toLowerCase().trim();
+        if (!emailLower) {
+          setError('Missing email on auth user.');
           setLoading(false);
           return;
         }
 
-        const vId = (adminSnap.data() as any).venueId as string;
-        if (!vId) {
-          setError('Admin venueId not set.');
+        const userRef = doc(db, 'venueAdmins', emailLower);
+        const userSnap = await getDoc(userRef);
+
+        if (!userSnap.exists()) {
+          setError('User record not found.');
           setLoading(false);
           return;
         }
 
-        setVenueId(vId);
+        const userData: any = userSnap.data();
 
-        const venueSnap = await getDoc(doc(db, 'venues', vId));
+        // Support both new (`venueIds`) and legacy (`venueId`) shapes
+        const venueIds: string[] =
+          Array.isArray(userData.venueIds) && userData.venueIds.length > 0
+            ? userData.venueIds
+            : userData.venueId
+            ? [userData.venueId]
+            : [];
+
+        if (venueIds.length === 0) {
+          setError('No venues assigned to this admin account.');
+          setLoading(false);
+          return;
+        }
+
+        // Determine active venue (localStorage). If missing:
+        // - if multiple venues, force selection
+        // - if one venue, auto-select it
+        let activeVenueId: string | null =
+          typeof window !== 'undefined'
+            ? localStorage.getItem('activeVenueId')
+            : null;
+
+        if (!activeVenueId) {
+          if (venueIds.length > 1) {
+            router.replace('/select-venue');
+            return;
+          }
+          activeVenueId = venueIds[0];
+          localStorage.setItem('activeVenueId', activeVenueId);
+        }
+
+        // If stored active venue isn't valid for this admin, reset to the first assigned venue
+        if (!venueIds.includes(activeVenueId)) {
+          activeVenueId = venueIds[0];
+          localStorage.setItem('activeVenueId', activeVenueId);
+        }
+
+        setVenueId(activeVenueId);
+
+        const venueSnap = await getDoc(doc(db, 'venues', activeVenueId));
         if (venueSnap.exists()) {
           setVenueName((venueSnap.data() as any)?.name || '');
         }
@@ -546,8 +585,6 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {/* REVIEWS OVERVIEW */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
       {/* VIBE DAILY OVERVIEW */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
         <div className="flex items-start justify-between gap-4">
@@ -644,6 +681,9 @@ export default function AnalyticsPage() {
           </div>
         </div>
       </div>
+
+      {/* REVIEWS OVERVIEW */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-sm text-zinc-400">Reviews</div>
