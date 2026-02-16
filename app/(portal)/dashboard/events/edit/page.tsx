@@ -2,7 +2,7 @@
 
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   doc,
@@ -61,7 +61,7 @@ function parseLines(text: string) {
     .filter(Boolean);
 }
 
-export default function EditEventPage() {
+function EditEventInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -522,5 +522,19 @@ export default function EditEventPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function EditEventPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-black text-white flex items-center justify-center">
+          Loading...
+        </div>
+      }
+    >
+      <EditEventInner />
+    </Suspense>
   );
 }
