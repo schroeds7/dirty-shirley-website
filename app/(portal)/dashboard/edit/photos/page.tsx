@@ -1,8 +1,6 @@
-
-
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import {
@@ -24,6 +22,20 @@ function normalizePhotoList(input: any): string[] {
 }
 
 export default function EditPhotosPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto w-full max-w-5xl px-4 py-10">
+          <div className="text-sm text-white/70">Loading…</div>
+        </div>
+      }
+    >
+      <EditPhotosInner />
+    </Suspense>
+  );
+}
+
+function EditPhotosInner() {
   const router = useRouter();
   const params = useSearchParams();
 
