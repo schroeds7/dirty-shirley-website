@@ -243,6 +243,8 @@ function VenueOverview({
     return list.filter(Boolean);
   }, [venueData]);
 
+  const router = useRouter();
+
   const [idx, setIdx] = useState(0);
 
   useEffect(() => {
@@ -280,6 +282,7 @@ function VenueOverview({
     genre: '',
     tags: '',
     minAge: '',
+    description: '',
   });
 
   // Keep form in sync with venue data when not editing
@@ -297,6 +300,7 @@ function VenueOverview({
       genre: venueData?.genre || '',
       tags: venueData?.tags || '',
       minAge: venueData?.minAge || '',
+      description: venueData?.description || '',
     });
   }, [venueData, isEditing]);
 
@@ -328,6 +332,7 @@ function VenueOverview({
         phone: form.phone.trim(),
         website: form.website.trim(),
         instagramUrl: form.instagramUrl.trim(),
+        description: form.description.trim(),
         type: form.type.trim(),
         genre: form.genre.trim(),
         tags: form.tags.trim(),
@@ -366,7 +371,17 @@ function VenueOverview({
         {/* LEFT: Photos carousel */}
         <div>
           <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-semibold">Photos</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-2xl font-semibold">Photos</h2>
+              <button
+                type="button"
+                onClick={() => router.push(`/dashboard/edit/photos?venueId=${encodeURIComponent(venueId)}`)}
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-sm hover:bg-white/10"
+              >
+                Edit Photos
+              </button>
+            </div>
+
             {hasPhotos && (
               <div className="text-xs text-zinc-400">
                 {idx + 1} of {photos.length}
@@ -379,10 +394,10 @@ function VenueOverview({
               <img
                 src={currentPhoto}
                 alt={`Venue photo ${idx + 1}`}
-                className="h-[320px] w-full object-cover"
+                className="h-[480px] w-full object-cover"
               />
             ) : (
-              <div className="h-[320px] w-full flex items-center justify-center text-zinc-400">
+              <div className="h-[480px] w-full flex items-center justify-center text-zinc-400">
                 No photos uploaded yet.
               </div>
             )}
@@ -582,16 +597,39 @@ function VenueOverview({
             </div>
 
             <div>
+              <div className="text-zinc-400">Description</div>
+              {!isEditing ? (
+                venueData?.description ? (
+                  <div className="text-white whitespace-pre-wrap">{venueData.description}</div>
+                ) : (
+                  <div className="text-white">—</div>
+                )
+              ) : (
+                <textarea
+                  value={form.description}
+                  onChange={(e) => onChange('description', e.target.value)}
+                  className="mt-1 min-h-[120px] w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
+                  placeholder="Short venue description (vibe, music, crowd, etc.)"
+                />
+              )}
+            </div>
+
+            <div>
               <div className="text-zinc-400">Type</div>
               {!isEditing ? (
                 <div className="text-white">{type}</div>
               ) : (
-                <input
-                  value={form.type}
-                  onChange={(e) => onChange('type', e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
-                  placeholder="Nightclub"
-                />
+                <div className="mt-1 space-y-1">
+                  <div className="text-xs text-white/60 leading-relaxed">
+                    Select up to 3 of the options below. Separate them by comma and space (ex: Bar, Nightclub). Nightclub, Bar, Lounge, Live Music Venue, Rooftop, Pool Party, Dayclub, Speakeasy, Cocktail Bar, Sports Bar, Tiki Bar, Irish Pub
+                  </div>
+                  <textarea
+                    value={form.type}
+                    onChange={(e) => onChange('type', e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
+                    placeholder="Bar, Nightclub"
+                  />
+                </div>
               )}
             </div>
 
@@ -600,12 +638,17 @@ function VenueOverview({
               {!isEditing ? (
                 <div className="text-white">{genre}</div>
               ) : (
-                <input
-                  value={form.genre}
-                  onChange={(e) => onChange('genre', e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
-                  placeholder="Hip-Hop, EDM, Top 40"
-                />
+                <div className="mt-1 space-y-1">
+                  <div className="text-xs text-white/60 leading-relaxed">
+                    Select up to 5 of the options below. Separate them by comma and space (ex: EDM, House). EDM, Hip-Hop, Rap, Top 40, Pop, Latin, Reggaeton, House, Techno, R&B, Live Bands, Country, Chill, Rock, Alternative, Indie
+                  </div>
+                  <textarea
+                    value={form.genre}
+                    onChange={(e) => onChange('genre', e.target.value)}
+                    className="mt-1 min-h-[70px] w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
+                    placeholder="EDM, House"
+                  />
+                </div>
               )}
             </div>
 
@@ -614,12 +657,18 @@ function VenueOverview({
               {!isEditing ? (
                 <div className="text-white">{tags}</div>
               ) : (
-                <textarea
-                  value={form.tags}
-                  onChange={(e) => onChange('tags', e.target.value)}
-                  className="mt-1 min-h-[90px] w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
-                  placeholder="Bottle Service, Live DJ, Dance Floor, ..."
-                />
+                <div className="mt-1 space-y-1">
+                  <div className="text-xs text-white/60 leading-relaxed">
+                    Select as many that apply. Separate them by comma and space (ex: Bottle Service, Live DJ).
+                    Bottle Service, Ladies Free Before X, Student Nights, Live DJ, Rooftop, Dance Floor, 21+ Only, 18+ Entry, VIP Tables, Casual Bar, Outdoor Patio, Late Night, Happy Hour, Cocktail Bar, Dive Bar, Sports Bar, Beachfront, Hotel Bar, Live Performances, Food Available, Private Events,
+                  </div>
+                  <textarea
+                    value={form.tags}
+                    onChange={(e) => onChange('tags', e.target.value)}
+                    className="mt-1 min-h-[90px] w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/25"
+                    placeholder="Bottle Service, Live DJ"
+                  />
+                </div>
               )}
             </div>
 
