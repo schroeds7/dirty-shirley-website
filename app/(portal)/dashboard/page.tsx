@@ -299,7 +299,8 @@ function VenueOverview({
       type: venueData?.type || '',
       genre: venueData?.genre || '',
       tags: venueData?.tags || '',
-      minAge: venueData?.minAge || '',
+      // Coerce to string so React inputs + .trim() never crash when Firestore stores numbers
+      minAge: String(venueData?.minAge ?? ''),
       description: venueData?.description || '',
     });
   }, [venueData, isEditing]);
@@ -336,8 +337,16 @@ function VenueOverview({
         type: form.type.trim(),
         genre: form.genre.trim(),
         tags: form.tags.trim(),
-        minAge: form.minAge.trim(),
       };
+      // Normalize minAge:
+      // - If blank, don't overwrite existing value
+      // - If numeric, store as number (preferred)
+      // - Otherwise store as trimmed string
+      const minAgeRaw = String((form as any).minAge ?? '').trim();
+      if (minAgeRaw !== '') {
+        const n = Number(minAgeRaw);
+        patch.minAge = Number.isFinite(n) ? n : minAgeRaw;
+      }
 
       // Persist to Firestore
       await updateDoc(doc(db, 'venues', venueId), patch);
