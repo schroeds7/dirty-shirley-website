@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { auth, db } from '@/lib/firebase';
+import { auth, db, storage } from '@/lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   doc,
   getDoc,
@@ -174,7 +175,8 @@ export default function NewEventPage() {
   const [eventType, setEventType] = useState('');
 
   const [promoted, setPromoted] = useState(false);
-  const [imageUrls, setImageUrls] = useState('');
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
+const [uploadingImages, setUploadingImages] = useState(false);
   const [ticketUrl, setTicketUrl] = useState('');
 
   const [isRecurring, setIsRecurring] = useState(false);
@@ -361,10 +363,33 @@ export default function NewEventPage() {
           ? (crypto as any).randomUUID()
           : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
-      const imgArray = imageUrls
-        .split('\n')
-        .map((x) => x.trim())
-        .filter((x) => x.length > 0);
+const uploadSelectedImages = async (opts: { venueId: string; seriesId: string }) => {
+  const { venueId, seriesId } = opts;
+  if (!imageFiles || imageFiles.length === 0) return [] as string[];
+
+  setUploadingImages(true);
+  try {
+    const urls: string[] = [];
+
+    for (const file of imageFiles) {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const objectPath = `venues/${venueId}/events/${seriesId}/${Date.now()}_${Math.random()
+        .toString(16)
+        .slice(2)}_${safeName}`;
+
+      const objectRef = ref(storage, objectPath);
+      await uploadBytes(objectRef, file);
+      const url = await getDownloadURL(objectRef);
+      urls.push(url);
+    }
+
+    return urls;
+  } finally {
+    setUploadingImages(false);
+  }
+};
+
+const imgArray = await uploadSelectedImages({ venueId, seriesId });
 
       let tagsToSave: any[] = [...selectedTags];
 
@@ -753,16 +778,36 @@ export default function NewEventPage() {
             />
           </div>
 
-          {/* IMAGES */}
-          <div>
-            <label className="text-sm">Image URLs (one per line)</label>
-            <textarea
-              rows={3}
-              value={imageUrls}
-              onChange={(e) => setImageUrls(e.target.value)}
-              className="w-full mt-1 p-2 rounded bg-zinc-800 border border-zinc-700"
-            />
-          </div>
+{/* IMAGES */}
+<div>
+  <label className="text-sm">Event Images</label>
+
+  <input
+    type="file"
+    accept="image/*"
+    multiple
+    onChange={(e) => {
+      const files = Array.from(e.target.files ?? []);
+      setImageFiles(files);
+    }}
+    className="w-full mt-2 p-2 rounded bg-zinc-800 border border-zinc-700"
+  />
+
+  {imageFiles.length > 0 && (
+    <div className="mt-2 text-xs text-white/70 space-y-1">
+      <div className="font-semibold">Selected:</div>
+      <ul className="list-disc pl-5">
+        {imageFiles.map((f) => (
+          <li key={f.name + f.size}>{f.name}</li>
+        ))}
+      </ul>
+    </div>
+  )}
+
+  <div className="mt-2 text-xs text-white/60">
+    Uploads to Firebase Storage when you click “Create Event”.
+  </div>
+</div>
 
           {/* RECURRING */}
           <div>
@@ -860,13 +905,13 @@ onChange={(e) => {
           </div>
 
           {/* SUBMIT */}
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full bg-red-600 hover:bg-red-700 py-3 rounded-lg font-semibold"
-          >
-            {submitting ? 'Creating...' : 'Create Event'}
-          </button>
+<button
+  type="submit"
+  disabled={submitting || uploadingImages}
+  className="w-full bg-red-600 hover:bg-red-700 py-3 rounded-lg font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+>
+  {uploadingImages ? 'Uploading images...' : submitting ? 'Creating...' : 'Create Event'}
+</button>
 
           {success && <p className="text-green-500 mt-2">{success}</p>}
           {error && <p className="text-red-500 mt-2">{error}</p>}
