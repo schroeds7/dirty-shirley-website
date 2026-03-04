@@ -38,7 +38,9 @@ export default function HomePage() {
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               {/* Download links can be updated when live */}
               <Link
-                href="/about#download"
+                href="https://apps.apple.com/us/app/dirty-shirley/id6759010808"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="inline-flex items-center justify-center rounded-xl bg-white px-5 py-3 text-sm font-semibold text-black hover:bg-white/90"
               >
                 Download the App
