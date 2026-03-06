@@ -7,11 +7,17 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   doc,
   getDoc,
+  getDocs,
   collection,
   setDoc,
   serverTimestamp,
   Timestamp,
   writeBatch,
+  query,
+  orderBy,
+  startAt,
+  endAt,
+  limit,
 } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 
@@ -116,6 +122,8 @@ function generateWeeklyOccurrences(opts: {
 
   const sorted = [...new Set(weekdays)].sort((a, b) => a - b);
   const results: Array<{ start: Date; end: Date }> = [];
+// Host venues: “And more…” flag (means there are additional venues not listed/selected)
+const [hostVenuesAndMore, setHostVenuesAndMore] = useState(false);
 
   let cursorDay = startOfDay(start);
 
@@ -145,6 +153,14 @@ function generateWeeklyOccurrences(opts: {
    PAGE
 ---------------------------------------------------------- */
 
+type HostVenue = {
+  venueId: string;
+  name: string;
+  address?: string;
+  city?: string;
+  state?: string;
+};
+
 export default function NewEventPage() {
   const router = useRouter();
 
@@ -162,6 +178,8 @@ export default function NewEventPage() {
 
   const [status, setStatus] = useState<'active' | 'draft' | 'cancelled'>('active');
   const [coverCharge, setCoverCharge] = useState('');
+  const [coverChargeMen, setCoverChargeMen] = useState('');
+  const [coverChargeWomen, setCoverChargeWomen] = useState('');
   const [ageRequirement, setAgeRequirement] = useState('21+');
 
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
@@ -178,6 +196,18 @@ export default function NewEventPage() {
   const [imageFiles, setImageFiles] = useState<File[]>([]);
 const [uploadingImages, setUploadingImages] = useState(false);
   const [ticketUrl, setTicketUrl] = useState('');
+  const [promoCode, setPromoCode] = useState('');
+
+  // "Not at my venue" hosting
+const [notAtMyVenue, setNotAtMyVenue] = useState(false);
+const [hostVenues, setHostVenues] = useState<HostVenue[]>([]);
+
+// Venue search modal
+const [hostVenueModalOpen, setHostVenueModalOpen] = useState(false);
+const [venueSearchQuery, setVenueSearchQuery] = useState('');
+const [venueSearchResults, setVenueSearchResults] = useState<HostVenue[]>([]);
+const [venueSearchLoading, setVenueSearchLoading] = useState(false);
+const [venueSearchError, setVenueSearchError] = useState('');
 
   const [isRecurring, setIsRecurring] = useState(false);
 
@@ -323,6 +353,95 @@ const [uploadingImages, setUploadingImages] = useState(false);
     );
   };
 
+/* ----------------------------------------------------------
+   HOST VENUE SEARCH (case-insensitive)
+---------------------------------------------------------- */
+
+const isVenueSelected = (vId: string) => hostVenues.some((v) => v.venueId === vId);
+
+const toggleHostVenue = (v: HostVenue) => {
+  setHostVenues((prev) =>
+    prev.some((x) => x.venueId === v.venueId)
+      ? prev.filter((x) => x.venueId !== v.venueId)
+      : [...prev, v]
+  );
+};
+
+const runVenueSearch = async (raw: string) => {
+  const qText = (raw || '').trim();
+  setVenueSearchQuery(raw);
+
+  // Do not show anything unless user searched
+  if (!qText) {
+    setVenueSearchResults([]);
+    setVenueSearchError('');
+    return;
+  }
+
+  const qLower = qText.toLowerCase();
+  setVenueSearchLoading(true);
+  setVenueSearchError('');
+
+  try {
+    const venuesCol = collection(db, 'venues');
+
+    // Firestore string range queries are case-sensitive.
+    // Most venue names are Title Case, so query a few likely casings.
+    const titleCase = qText.length ? qText[0].toUpperCase() + qText.slice(1) : qText;
+    const upper = qText.toUpperCase();
+
+    // Helper to run a prefix query on `name`
+    const runPrefix = async (prefix: string) => {
+      const q = query(
+        venuesCol,
+        orderBy('name'),
+        startAt(prefix),
+        endAt(prefix + '\uf8ff'),
+        limit(25)
+      );
+      return getDocs(q);
+    };
+
+    const [snapA, snapB, snapC] = await Promise.all([
+      runPrefix(qText),
+      runPrefix(titleCase),
+      runPrefix(upper),
+    ]);
+
+    const byId = new Map<string, HostVenue>();
+
+    const addSnap = (snap: any) => {
+      for (const d of snap.docs) {
+        const data: any = d.data();
+        const row: HostVenue = {
+          venueId: data.venueId || d.id,
+          name: data.name || 'Unnamed Venue',
+          address: data.address || '',
+          city: data.city || '',
+          state: data.state || '',
+        };
+
+        // Final true case-insensitive containment filter
+        if ((row.name || '').toLowerCase().includes(qLower)) {
+          byId.set(row.venueId, row);
+        }
+      }
+    };
+
+    addSnap(snapA);
+    addSnap(snapB);
+    addSnap(snapC);
+
+    setVenueSearchResults(Array.from(byId.values()).slice(0, 25));
+  } catch (err: any) {
+    console.error(err);
+    setVenueSearchError('Search failed.');
+    setVenueSearchResults([]);
+  } finally {
+    setVenueSearchLoading(false);
+  }
+};
+
   /* ----------------------------------------------------------
      SUBMIT LOGIC
   ---------------------------------------------------------- */
@@ -333,7 +452,6 @@ const [uploadingImages, setUploadingImages] = useState(false);
     setSubmitting(true);
     setError('');
     setSuccess('');
-
     try {
       if (!startDateTime || !endDateTime)
         throw new Error('Start & end date required.');
@@ -419,13 +537,28 @@ const imgArray = await uploadSelectedImages({ venueId, seriesId });
 
         venueId,
         venueName: venueData.name,
+        // Posting account (the admin's active venue)
+postedByVenueId: venueId,
+postedByVenueName: venueData.name,
+
+// Where the event is actually hosted
+notAtMyVenue: !!notAtMyVenue,
+hostVenueIds: notAtMyVenue ? hostVenues.map((v) => v.venueId) : [],
+hostVenues: notAtMyVenue ? hostVenues : [],
         city: venueData.city,
         state: venueData.state,
         zip: venueData.zip,
         cityNormalized: (venueData.city || '').toLowerCase().trim(),
 
         status,
-        coverCharge,
+        // Legacy string (kept for backward compatibility)
+        coverCharge:
+          (coverChargeMen.trim() || coverChargeWomen.trim())
+            ? `Men: ${coverChargeMen.trim() || '—'} | Women: ${coverChargeWomen.trim() || '—'}`
+            : (coverCharge || ''),
+        // New split fields
+        coverChargeMen: coverChargeMen.trim() || null,
+        coverChargeWomen: coverChargeWomen.trim() || null,
         ageRequirement,
         musicGenres: selectedGenres,
         artists: artistsInput
@@ -439,6 +572,7 @@ const imgArray = await uploadSelectedImages({ venueId, seriesId });
         promoted,
         images: imgArray,
         ticketUrl,
+        promoCode: promoCode.trim() || null,
 
         isRecurring: !!isRecurring,
         seriesId: isRecurring ? seriesId : null,
@@ -463,6 +597,10 @@ const imgArray = await uploadSelectedImages({ venueId, seriesId });
         views: 0,
       };
 
+if (notAtMyVenue && hostVenues.length === 0) {
+  throw new Error('Please select at least one host venue.');
+}
+
       const eventsCol = collection(db, 'events');
 
       if (!isRecurring) {
@@ -478,8 +616,19 @@ const imgArray = await uploadSelectedImages({ venueId, seriesId });
 
         await setDoc(newEventRef, eventData);
 
-        const venueEventRef = doc(db, 'venues', venueId, 'events', eventId);
-        await setDoc(venueEventRef, eventData);
+// Always save under the poster venue
+const venueEventRef = doc(db, 'venues', venueId, 'events', eventId);
+await setDoc(venueEventRef, eventData);
+
+// If hosted elsewhere, also save under each host venue
+if (notAtMyVenue) {
+  await Promise.all(
+    hostVenues.map((hv) => {
+      const hostRef = doc(db, 'venues', hv.venueId, 'events', eventId);
+      return setDoc(hostRef, eventData);
+    })
+  );
+}
       } else {
         const occurrences = generateWeeklyOccurrences({
           start: startJs,
@@ -503,10 +652,18 @@ const imgArray = await uploadSelectedImages({ venueId, seriesId });
 
           batch.set(newEventRef, eventData);
 
+          // Always save under the poster venue
           const venueEventRef = doc(db, 'venues', venueId, 'events', eventId);
           batch.set(venueEventRef, eventData);
-        }
 
+          // If hosted elsewhere, also save under each host venue
+          if (notAtMyVenue) {
+            for (const hv of hostVenues) {
+              const hostRef = doc(db, 'venues', hv.venueId, 'events', eventId);
+              batch.set(hostRef, eventData);
+            }
+          }
+        }
         await batch.commit();
       }
 
@@ -634,6 +791,61 @@ const imgArray = await uploadSelectedImages({ venueId, seriesId });
               ))}
             </select>
           </div>
+
+{/* NOT AT MY VENUE */}
+<div className="rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+  <label className="flex items-center gap-2 text-sm font-semibold">
+    <input
+      type="checkbox"
+      checked={notAtMyVenue}
+      onChange={(e) => {
+        const checked = e.target.checked;
+        setNotAtMyVenue(checked);
+        if (!checked) {
+          setHostVenues([]);
+          setVenueSearchQuery('');
+          setVenueSearchResults([]);
+          setVenueSearchError('');
+
+        }
+      }}
+    />
+    Not at my venue
+  </label>
+
+  {notAtMyVenue && (
+    <div className="mt-3">
+      <button
+        type="button"
+        onClick={() => setHostVenueModalOpen(true)}
+        className="px-4 py-2 rounded bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-sm"
+      >
+        Select host venue(s)
+      </button>
+
+      {hostVenues.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {hostVenues.map((v) => (
+            <div
+              key={v.venueId}
+              className="flex items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs"
+            >
+              <span className="text-white/80">{v.name}</span>
+              <button
+                type="button"
+                onClick={() => toggleHostVenue(v)}
+                className="text-white/50 hover:text-white/80"
+                aria-label={`Remove ${v.name}`}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )}
+</div>
 
           {/* MUSIC GENRES */}
           <div>
@@ -767,6 +979,42 @@ const imgArray = await uploadSelectedImages({ venueId, seriesId });
             />
           </div>
 
+          {/* PROMO CODE */}
+          <div>
+            <label className="text-sm">Promo Code (optional)</label>
+            <input
+              value={promoCode}
+              onChange={(e) => setPromoCode(e.target.value)}
+              placeholder="e.g., DIRTY10"
+              className="w-full mt-1 p-2 rounded bg-zinc-800 border border-zinc-700"
+            />
+          </div>
+
+          {/* COVER CHARGE (MEN / WOMEN) */}
+          <div>
+            <label className="text-sm">Cover Charge (optional)</label>
+            <div className="mt-2 grid grid-cols-2 gap-4">
+              <div>
+                <div className="text-xs text-white/70">Men</div>
+                <input
+                  value={coverChargeMen}
+                  onChange={(e) => setCoverChargeMen(e.target.value)}
+                  placeholder="e.g., $20"
+                  className="w-full mt-1 p-2 rounded bg-zinc-800 border border-zinc-700"
+                />
+              </div>
+              <div>
+                <div className="text-xs text-white/70">Women</div>
+                <input
+                  value={coverChargeWomen}
+                  onChange={(e) => setCoverChargeWomen(e.target.value)}
+                  placeholder="e.g., $10"
+                  className="w-full mt-1 p-2 rounded bg-zinc-800 border border-zinc-700"
+                />
+              </div>
+            </div>
+          </div>
+
           {/* PERFORMERS / ARTISTS */}
           <div>
             <label className="text-sm">Performer / Artist Name(s)</label>
@@ -815,26 +1063,26 @@ const imgArray = await uploadSelectedImages({ venueId, seriesId });
               <input
                 type="checkbox"
                 checked={isRecurring}
-onChange={(e) => {
-  const checked = e.target.checked;
-  setIsRecurring(checked);
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setIsRecurring(checked);
 
-  if (checked) {
-    // Default to the start date's weekday (if start datetime is set)
-    if (startDateTime) {
-      const d = new Date(startDateTime);
-      if (!Number.isNaN(d.getTime())) {
-        setRepeatWeekdays([d.getDay()]);
-      }
-    } else {
-      setRepeatWeekdays([]);
-    }
-    setOccurrencesCount(10);
-  } else {
-    setRepeatWeekdays([]);
-    setOccurrencesCount(10);
-  }
-}}
+                  if (checked) {
+                    // Default to the start date's weekday (if start datetime is set)
+                    if (startDateTime) {
+                      const d = new Date(startDateTime);
+                      if (!Number.isNaN(d.getTime())) {
+                        setRepeatWeekdays([d.getDay()]);
+                      }
+                    } else {
+                      setRepeatWeekdays([]);
+                    }
+                    setOccurrencesCount(10);
+                  } else {
+                    setRepeatWeekdays([]);
+                    setOccurrencesCount(10);
+                  }
+                }}
               />
               This event recurs
             </label>
@@ -917,6 +1165,105 @@ onChange={(e) => {
           {error && <p className="text-red-500 mt-2">{error}</p>}
         </form>
       </div>
+      {/* HOST VENUE SEARCH MODAL */}
+      {hostVenueModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-2xl rounded-xl border border-zinc-800 bg-zinc-950 p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-lg font-semibold">Select host venue(s)</div>
+                <div className="mt-1 text-xs text-white/60">
+                  Search by venue name. Results only appear after you type.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHostVenueModalOpen(false)}
+                className="rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm hover:bg-zinc-800"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <input
+                value={venueSearchQuery}
+                onChange={(e) => runVenueSearch(e.target.value)}
+                placeholder="Search venues by name..."
+                className="w-full mt-1 p-2 rounded bg-zinc-900 border border-zinc-800"
+              />
+              {venueSearchLoading && (
+                <div className="mt-2 text-xs text-white/60">Searching…</div>
+              )}
+              {venueSearchError && (
+                <div className="mt-2 text-xs text-red-400">{venueSearchError}</div>
+              )}
+            </div>
+
+            <div className="mt-4 max-h-[55vh] overflow-auto">
+              {venueSearchQuery.trim().length === 0 ? (
+                <div className="text-sm text-white/40">Type to search for venues.</div>
+              ) : venueSearchResults.length === 0 && !venueSearchLoading ? (
+                <div className="text-sm text-white/40">No matches.</div>
+              ) : (
+                <div className="space-y-2">
+                  {venueSearchResults.map((v) => {
+                    const selected = isVenueSelected(v.venueId);
+                    const addrLine = [v.address, [v.city, v.state].filter(Boolean).join(', ')]
+                      .filter(Boolean)
+                      .join(' • ');
+
+                    return (
+                      <button
+                        key={v.venueId}
+                        type="button"
+                        onClick={() => toggleHostVenue(v)}
+                        className={`w-full text-left rounded-lg border p-3 transition ${
+                          selected
+                            ? 'border-red-500/50 bg-red-500/10'
+                            : 'border-white/10 bg-black/20 hover:bg-black/30'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-white/90">{v.name}</div>
+                            <div className="mt-1 text-xs text-white/60">{addrLine}</div>
+                          </div>
+                          <div className={`text-xs ${selected ? 'text-red-200' : 'text-white/50'}`}>
+                            {selected ? 'Selected' : 'Select'}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex items-center justify-between">
+              <div className="text-xs text-white/60">
+                Selected: <span className="text-white/80">{hostVenues.length}</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setHostVenues([])}
+                  className="rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm hover:bg-zinc-800"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHostVenueModalOpen(false)}
+                  className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold hover:bg-red-700"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
